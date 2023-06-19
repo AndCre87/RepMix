@@ -15,3 +15,5 @@ This repository contains the code for implementing the proposed methodology. Spe
 
 # Contents
 Simul_AirQuality.R
+
+The MCMC output is saved, and can be used to produce the figures presented in the paper (some examples are reported in the code).

@@ -31,12 +31,13 @@ S <- rep(1, M)
 Tsum <- sum(S)
 u <- rgamma(1, N, rate = Tsum)
 
-zeta <- 1 #zeta > 0 
+zeta <- matrix(1,1,d) #zeta > 0 
+logzeta <- log(zeta)
 
 #prior on zeta is a gamma(a,b)
 update_zeta <- TRUE
-a_zeta <- 1
-b_zeta <- 1
+a_zeta <- rep(1,d)
+b_zeta <- rep(1,d)
 
 
 #Hyperparameters for variances which are component-specific but not repulsive
@@ -52,8 +53,8 @@ Z_log <- function(zeta, k){
   return(sum_out)
 }
 #Try (k = 1 is the normal distribution)
-Z_log(zeta, 1)
-1/2*log(2*pi/zeta)
+Z_log(zeta[1], 1)
+1/2*log(2*pi/zeta[1])
 
 #The parameters theta come from a joint distribution. Initalise to marginals
 theta <- matrix(rnorm(M * d, 0, sd = sqrt(1/zeta)), M, d)
@@ -77,15 +78,18 @@ death_count <- 0
 
 #Algorithm details
 n_burn1 <- 100
-n_burn2 <- 2500
+n_burn2 <- 5000
 thin <- 2
-n_save <- 2500
+n_save <- 5000
 n_tot <- n_burn1 + n_burn2 + thin * n_save
 
 #Adaptive
 S_theta <- 0.1 * diag(d)
-s_zeta <- 0.01
-zeta_accept <- 0
+S_zeta <- 0.1 * diag(d)
+sumzeta <- rep(0,d)
+prodzeta <- matrix(0,d,d)
+sd_zeta <- 2.4^2/d
+zeta_accept <- rep(0,d)
 
 #Output
 K_N_out_Gauss <- rep(NA, n_save)
@@ -95,7 +99,7 @@ Sigma_out_Gauss <- vector("list", length = n_save)
 S_out_Gauss <- vector("list", length = n_save)
 z_out_Gauss <- matrix(NA, n_save, N)
 u_out_Gauss <- rep(NA, n_save)
-zeta_out <- rep(NA, n_save)
+zeta_out <- matrix(NA, n_save,d)
 
 
 #Main Gibbs sampler
@@ -147,7 +151,7 @@ for(it in 1:n_tot){
   ## sample latent parameters ##
   
   #Allocated components
-  for(j in 1:K_N){
+  for(j in 1:M){
     #Indices in this cluster
     index_j <- c(1:N)[which(z == j)]
     
@@ -161,18 +165,20 @@ for(it in 1:n_tot){
     # Evaluate log-ratio #
     
     #Prior: independent part and #Proposal: log-normal does not cancel (+1)
-    log_ratio_theta_j <- - zeta / 2 * sum(theta_new^2 - theta_j^2)
+    log_ratio_theta_j <- - sum(zeta * (theta_new^2 - theta_j^2)) / 2
     #Prior: Repulsive part
     for(j_bis in c(1:M)[-j]){
-      log_ratio_theta_j <- log_ratio_theta_j + zeta * sum(log(abs(theta_new - theta[j_bis,])))
-      log_ratio_theta_j <- log_ratio_theta_j - zeta * sum(log(abs(theta_j - theta[j_bis,])))
+      log_ratio_theta_j <- log_ratio_theta_j + sum(zeta * log(abs(theta_new - theta[j_bis,])))
+      log_ratio_theta_j <- log_ratio_theta_j - sum(zeta * log(abs(theta_j - theta[j_bis,])))
     }
     
-    #Likelihood
-    if(n_j[j] > 1){
-      log_ratio_theta_j <- log_ratio_theta_j + sum(apply(y[index_j,], 1, dmvn, mu = theta_new, sigma = Sigma_j, log = TRUE) - apply(y[index_j,], 1, dmvn, mu = theta_j, sigma = Sigma_j, log = TRUE))
-    }else{
-      log_ratio_theta_j <- log_ratio_theta_j - 0.5 * ((y[index_j,] - theta_new) %*% solve(Sigma_j) %*% t(y[index_j,] - theta_new) - t(y[index_j,] - theta_j) %*% solve(Sigma_j) %*% (y[index_j,] - theta_j))
+    if(j <= K_N){
+      #Likelihood
+      if(n_j[j] > 1){
+        log_ratio_theta_j <- log_ratio_theta_j + sum(apply(y[index_j,], 1, dmvn, mu = theta_new, sigma = Sigma_j, log = TRUE) - apply(y[index_j,], 1, dmvn, mu = theta_j, sigma = Sigma_j, log = TRUE))
+      }else{
+        log_ratio_theta_j <- log_ratio_theta_j - 0.5 * ((y[index_j,] - theta_new) %*% solve(Sigma_j) %*% t(y[index_j,] - theta_new) - t(y[index_j,] - theta_j) %*% solve(Sigma_j) %*% (y[index_j,] - theta_j))
+      }
     }
     
     accept_theta_j <- 1
@@ -230,14 +236,18 @@ for(it in 1:n_tot){
     
     #Prior and Mixing measure
     log_ratio_birth <- log_ratio_birth - gamma_S * log(1 + u) + log(Lambda_M) - log(M)
-    log_ratio_birth <- log_ratio_birth + d * (Z_log(zeta, M) - Z_log(zeta, M_new))
+    for(id in 1:d){
+      log_ratio_birth <- log_ratio_birth + Z_log(zeta[id], M) - Z_log(zeta[id], M_new)
+    }
     #Prior: Repulsive part
     for(j_bis in c(1:M)){
-      log_ratio_birth <- log_ratio_birth + zeta * sum(log(abs(theta_new - theta[j_bis,])))
+      log_ratio_birth <- log_ratio_birth + sum(zeta * log(abs(theta_new - theta[j_bis,])))
     }
     
     #Proposal
-    log_ratio_birth <- log_ratio_birth + d * Z_log(zeta, 1) #proposal is normal
+    for(id in 1:d){
+      log_ratio_birth <- log_ratio_birth + Z_log(zeta[id], 1) #proposal is normal
+    }
     log_ratio_birth <- log_ratio_birth + log(p_d) - log(p_b_now) - log(M_na_new)
     
     accept_birth <- 1
@@ -282,14 +292,18 @@ for(it in 1:n_tot){
     
     #Prior and Mixing measure
     log_ratio_death <- log_ratio_death + gamma_S * log(1 + u) - log(Lambda_M) + log(M_new)
-    log_ratio_death <- log_ratio_death + d * (Z_log(zeta, M) - Z_log(zeta, M_new))
+    for(id in 1:d){
+      log_ratio_death <- log_ratio_death + Z_log(zeta[id], M) - Z_log(zeta[id], M_new)
+    }
     #Prior: Repulsive part
     for(j_bis in c(1:M)[-j_death]){
-      log_ratio_death <- log_ratio_death - zeta * sum(log(abs(theta_death - theta[j_bis,])))
+      log_ratio_death <- log_ratio_death - sum(zeta * log(abs(theta_death - theta[j_bis,])))
     }
     
     #Proposal
-    log_ratio_death <- log_ratio_death - d * Z_log(zeta, 1) #proposal is normal
+    for(id in 1:d){
+      log_ratio_death <- log_ratio_death - Z_log(zeta[id], 1) #proposal is normal
+    }
     log_ratio_death <- log_ratio_death - log(p_d) + log(p_b_now) + log(M_na)
     
     accept_death <- 1
@@ -322,19 +336,22 @@ for(it in 1:n_tot){
   
   if(update_zeta){
     #Propose a new value of zeta from a log-normal
-    zeta_new <- zeta * exp(sqrt(s_zeta) * rnorm(1))    
+    logzeta_new <- rmvn(1, mu = logzeta, sigma = S_zeta)
+    zeta_new <- exp(logzeta_new)
     
     # Evaluate log-ratio #
-    log_ratio_zeta <- a_zeta * (log(zeta_new) - log(zeta)) - b_zeta *(zeta_new - zeta)
+    log_ratio_zeta <- sum(a_zeta * (logzeta_new - logzeta) - b_zeta *(zeta_new - zeta))
     
-    log_ratio_zeta <- log_ratio_zeta + d * (Z_log(zeta, M) - Z_log(zeta_new, M))
-    log_ratio_zeta <- log_ratio_zeta - (zeta_new - zeta) / 2 * sum(theta^2)
+    for(id in 1:d){
+      log_ratio_zeta <- log_ratio_zeta + Z_log(zeta[id], M) - Z_log(zeta_new[id], M)
+      log_ratio_zeta <- log_ratio_zeta - (zeta_new[id] - zeta[id]) / 2 * sum(theta[,id]^2)
+    }
     
     if(M > 1){
       #Prior: Repulsive part
       for(j1 in c(1:(M-1))){
         for(j2 in c((j1 + 1):M)){
-          log_ratio_zeta <- log_ratio_zeta + (zeta_new - zeta) * sum(log(abs(theta[j1,] - theta[j2,])))
+          log_ratio_zeta <- log_ratio_zeta + sum((zeta_new - zeta) * log(abs(theta[j1,] - theta[j2,])))
         }
       }
     }
@@ -352,15 +369,24 @@ for(it in 1:n_tot){
     
     if( runif(1) < accept_zeta ){
       zeta <- zeta_new
+      logzeta <- logzeta_new
     }
     
+    
+    sumzeta <- sumzeta + logzeta
+    prodzeta <- prodzeta + t(logzeta) %*% logzeta
+    
+    
     if(it > n_burn1){
-      s_zeta <- s_zeta + it ^(-0.7) * (accept_zeta - 0.234)
-      if(s_zeta > exp(50)){
-        s_zeta = exp(50)
+      
+      S_zeta <- sd_zeta * ((prodzeta - t(sumzeta) %*% sumzeta/it)/(it-1) + 0.01 * diag(d))
+      
+      sd_zeta <- sd_zeta + it ^(-0.7) * (accept_zeta - 0.234)
+      if(sd_zeta > exp(50)){
+        sd_zeta = exp(50)
       }else{
-        if(s_zeta < exp(-50)){
-          s_zeta = exp(-50)
+        if(sd_zeta < exp(-50)){
+          sd_zeta = exp(-50)
         }
       }
     }
@@ -369,7 +395,7 @@ for(it in 1:n_tot){
   
   
   
-  if(it%%10 == 0){
+  if(it%%100 == 0){
     print(paste("it = ", it, sep = ""))
     print(paste("M = ", M, sep = ""))
     print(paste("K_N = ", K_N, sep = ""))
@@ -393,14 +419,14 @@ for(it in 1:n_tot){
     Sigma_out_Gauss[[iter]] <- Sigma
     S_out_Gauss[[iter]] <- S
     z_out_Gauss[iter,] <- z
-    zeta_out[iter] <- zeta
+    zeta_out[iter,] <- zeta
   }
   
   setTxtProgressBar(pb, it)
 }
 
 #Save output
-save.image(file = "OUTPUT_MCMC_Gaussian.RData")
+save.image(file = "OUTPUT_MCMC_Gaussian_stdprior.RData")
 
 print(birth_accept / birth_count)
 print(death_accept / death_count)
@@ -408,8 +434,9 @@ print(death_accept / death_count)
 
 #Histogram of zeta
 pdf("zeta_hist_Gaussian.pdf")
-par(mar = c(5,5,5,5))
-hist(zeta_out, col = "lightblue", xlab = bquote(zeta), main = "", ylab = bquote(P(zeta~"|"~y)), freq = FALSE, cex.axis = 2, cex.lab = 2)
+par(mar = c(5,5,5,5), mfrow = c(1,2))
+hist(zeta_out[,1], col = "lightblue", xlab = bquote(zeta), main = "", ylab = bquote(P(zeta~"|"~y)), freq = FALSE, cex.axis = 2, cex.lab = 2)
+hist(zeta_out[,2], col = "lightblue", xlab = bquote(zeta), main = "", ylab = bquote(P(zeta~"|"~y)), freq = FALSE, cex.axis = 2, cex.lab = 2)
 dev.off()
 
 
@@ -425,12 +452,12 @@ legend("topright", legend = c("Number of components", "Number of clusters"), col
 dev.off()
 
 
-#Binder partition
-Binder_partition_Gaussian <- c(dlso(z_out_Gauss, loss = "binder"))
+#VI partition
+VI_partition_Gaussian <- c(dlso(z_out_Gauss, loss = "VI"))
 
-K_N_Binder <- length(unique(Binder_partition_Gaussian))
-nj_Binder <- table(Binder_partition_Gaussian)
-nj_Binder
+K_N_VI <- length(unique(VI_partition_Gaussian))
+nj_VI <- table(VI_partition_Gaussian)
+nj_VI
 
 
 #Predictive distribution
@@ -458,29 +485,14 @@ for(it in 1:n_save){
   }
 }
 f_d <- f_d / n_save
+save(f_d, file = "Pred_Gaussian_stdprior.RData")
 
 
-pdf("AirQuality_contour_Gaussian.pdf")
+pdf("AirQuality_contour_Gaussian_stdprior.pdf")
 par(mar = c(5,5,5,5))
 contour(xx, yy, f_d, main = "", xlab = colnames(y)[1], ylab = colnames(y)[2], cex.main = 2, cex = 1.25, cex.lab = 2)
-points(y, pch = 19, col = Binder_partition_Gaussian, cex = 1.25)
+points(y, pch = 19, col = VI_partition_Gaussian, cex = 1.25)
 dev.off()
 
 
-pdf("zeta_post_Gaussian_kde.pdf")
-zeta_out_Gauss <- zeta_out
-par(mar = c(5,5,5,5))
-plot(density(zeta_out_Gauss), col = "#FF6666", cex.main = 2, xlab = bquote(zeta), main = "", ylab = bquote(P(zeta~"|"~y)), cex.axis = 2, cex.lab = 2, lwd = 3)
-dev.off()
-
-
-pdf("zeta_post_Gaussian.pdf")
-zeta_out_Gauss <- zeta_out
-par(mar = c(5,5,5,5))
-hist(zeta_out_Gauss, col = "lightblue", cex.main = 2, xlab = bquote(zeta), main = "", ylab = bquote(P(zeta~"|"~y)), cex.axis = 2, cex.lab = 2, lwd = 3)
-dev.off()
-
-quantile(zeta_out_Gauss, probs = c(0.025, 0.975))
-mean(zeta_out_Gauss)
-median(zeta_out_Gauss)
 
